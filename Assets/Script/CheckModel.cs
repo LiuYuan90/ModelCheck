@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
 using System.Text;
+using System.Text.RegularExpressions;
 using UnityEditor;
 using UnityEngine;
 
@@ -11,6 +12,28 @@ using UnityEngine;
 /// </summary>
 public class CheckModel : Editor
 {
+    #region 字符串
+    /// <summary>
+    /// 场景根节点名称
+    /// </summary>
+    public static string Env_Str = "Env";
+
+    /// <summary>
+    /// 检测结果输出的文件名
+    /// </summary>
+    public static string CheckResultFileName_Str = "/CheckResult.txt";
+
+    /// <summary>
+    /// 检测开始提示语
+    /// </summary>
+    public static string CkeckStart_Str = "----------------------------------检测开始----------------------------------";
+
+    /// <summary>
+    /// 检测结束提示语
+    /// </summary>
+    public static string CkeckDone_Str = "----------------------------------检测完成----------------------------------";
+    #endregion
+
     /// <summary>
     /// 根节点
     /// </summary>
@@ -52,25 +75,36 @@ public class CheckModel : Editor
     [MenuItem("EastSim/Check3DModel")]
     static void StartCheck()
     {
+        //清除编辑器中的Debug信息。
+        ClearConsoleMethod.Invoke(new object(), null);
+
+        Env = Selection.activeGameObject;
+        if (Env == null)
+        {
+            Debug.LogError("检测前要先选中场景根节点。");
+            return;
+        }
+        if (Env.transform.childCount <= 5)
+            AddOutPutInfo(string.Format("选中的对象名称为{0}，但是它的子物体数量少于5个，理论上是不正常的，是否选对了场景根节点？", Env.name));
+
         //准备工作
         PreparatoryWork();
 
-        Env = GameObject.Find(GlobalString.Env_Str);
-        if (Env == null)
-        {
-            AddOutPutInfo("没有找到场景根节点，名称应该为：" + GlobalString.Env_Str);
-            OutputInfo();
-            return;
-        }
-
-        //先检测重名
+        //检测重名
         CheckRepetitionName();
+
+        //碰撞片检测
+        CheckCollider();
 
         int secondGradeCount = Env.transform.childCount;
         for (int i = 0; i < secondGradeCount; i++)
         {
             GameObject tempParent = Env.transform.GetChild(i).gameObject;
             string secondGradeChildName = tempParent.name;
+
+            if (tempParent.GetComponent<Component>() != null)
+                OutPutInfoHavePath(string.Format("{0}上挂有组件，{1}下应该只有各个分组对象，分组对象都应该是虚拟物（空点）", secondGradeChildName, Env.name), tempParent);
+
             switch (secondGradeChildName)
             {
                 case "T":
@@ -92,28 +126,34 @@ public class CheckModel : Editor
                     CheckSCRIPT(tempParent);
                     break;
                 case "CollectionPoint":
-
+                    
                     break;
                 case "OTR":
 
                     break;
                 case "TKD":
-
+                    CheckTKD(tempParent);
                     break;
                 case "PipeGroup":
-
+                    CheckPipeGroup(tempParent);
                     break;
                 case "FloorGroup":
-
+                    CheckFloorGroup(tempParent);
                     break;
-                case "inclinedladderColider":
+                case "InclinedladderColider":
+                    CkeckInclinedladderColider(tempParent);
+                    break;
+                case "Hide_Models":
 
                     break;
                 case "ValveGroup":
-
+                    //阀门替代物目前包含两类
+                    //1、旧版中的阀门，有names.esp文件保存阀门信息，这些替代物以“ValveGroup”开头。
+                    //2、3D组去客户初审的时候，帮工程部同事添加的位置标记替代物，这些替代物的名称是该阀的位号。
+                    //所以这个分类目前无法检测。
                     break;
                 case "Collision":
-
+                    CheckCollision(tempParent);
                     break;
                 case "FireControllerGroup":
 
@@ -128,7 +168,9 @@ public class CheckModel : Editor
     }
 
     /// <summary>
-    /// 检测重名
+    /// 检测重名。
+    /// 重名是整个场景的问题，所以单独做。
+    /// 而且，如果放到每个分类节点中做的话，会影响递归方法。
     /// </summary>
     static void CheckRepetitionName()
     {
@@ -158,6 +200,24 @@ public class CheckModel : Editor
                     tempSB.Append("\n" + GetGameObjectPath(tempList[j].gameObject));
                 AddOutPutInfo(string.Format("“{0}”存在重名。这些对象分别是：{1}", childName, tempSB.ToString()));
             }
+        }
+    }
+
+    /// <summary>
+    /// 碰撞器检测。
+    /// 3D组应该只给碰撞片组添加Collider，其他对象都不应该添加。
+    /// </summary>
+    static void CheckCollider()
+    {
+        var colliderArr = Env.transform.GetComponentsInChildren<Collider>();
+        if (colliderArr == null || colliderArr.Length == 0)
+            return;
+        int tempCount = colliderArr.Length;
+        for (int i = 0; i < tempCount; i++)
+        {
+            GameObject tempGo = colliderArr[i].gameObject;
+            string tempGoName = tempGo.name;
+            OutPutInfoHavePath(string.Format("{0}带有碰撞器组件，场景中不应该存在带有碰撞器的对象", tempGoName), tempGo);
         }
     }
 
@@ -205,6 +265,193 @@ public class CheckModel : Editor
         }
     }
 
+    /// <summary>
+    /// 集合点
+    /// </summary>
+    /// <param name="parent"></param>
+    static void CheckCollectionPoint(GameObject parent)
+    {
+
+    }
+
+    /// <summary>
+    /// 检测车辆停靠点
+    /// </summary>
+    /// <param name="parent"></param>
+    static void CheckTKD(GameObject parent)
+    {
+        int childCountOne = parent.transform.childCount;
+        for (int i = 0; i < childCountOne; i++)
+        {
+            GameObject tempGoTwo = parent.transform.GetChild(i).gameObject;
+            string tempGoNameTwo = tempGoTwo.name;
+            var tempNameArr = Regex.Split(tempGoNameTwo, "__", RegexOptions.IgnoreCase);
+            if (tempNameArr == null || tempNameArr.Length != 3 || !tempNameArr[0].Equals("TKD"))
+            {
+                string tempCarName = tempNameArr[1];
+                if (tempCarName.Equals("XFC") || tempCarName.Equals("JHC") || tempCarName.Equals("QFC"))
+                {
+                    if (tempGoTwo.GetComponent<Component>() == null)
+                    {
+                        if (tempGoTwo.transform.childCount > 0)
+                        {
+                            OutPutInfoHavePath(string.Format("停靠点不应该有子物体，对象名为：{0}", tempGoNameTwo), tempGoTwo);
+                        }
+                    }
+                    else
+                    {
+                        OutPutInfoHavePath(string.Format("停靠点应该只是个虚拟物（空点），本对象可能挂有其他组件，对象名为：{0}", tempGoNameTwo), tempGoTwo);
+                    }
+                }
+                else
+                {
+                    OutPutInfoHavePath(string.Format("车辆的信息不是已知的车辆缩写，第二个字符串应该是车辆缩写，对象名为：{0}", tempGoNameTwo), tempGoTwo);
+                }
+            }
+            else
+            {
+                OutPutInfoHavePath(string.Format("停靠点命名不符合要求，对象名为{0}", tempGoNameTwo), tempGoTwo);
+            }
+        }
+    }
+
+    /// <summary>
+    /// 管线
+    /// </summary>
+    /// <param name="parent"></param>
+    static void CheckPipeGroup(GameObject parent)
+    {
+        int childCountOne = parent.transform.childCount;
+        for (int i = 0; i < childCountOne; i++)
+        {
+            GameObject tempGoTwo = parent.transform.GetChild(i).gameObject;
+            string tempGoNameTwo = tempGoTwo.name;
+            var tempNameArr = tempGoNameTwo.Split('_', '*');
+            if (tempNameArr == null || tempNameArr.Length != 3 || !tempNameArr[0].ToLower().Equals("gx"))
+            {
+                string tempCarName = tempNameArr[1];
+                float result = 0f;
+                float.TryParse(tempCarName, out result);
+                if (result == 0f)
+                {
+                    if (tempGoTwo.transform.childCount > 0)
+                    {
+                        OutPutInfoHavePath(string.Format("管线不应该有子物体，对象名为：{0}", tempGoNameTwo), tempGoTwo);
+                    }
+                }
+                else
+                {
+                    OutPutInfoHavePath(string.Format("管线的第二个字符串不是管线直径，对象名为：{0}", tempGoNameTwo), tempGoTwo);
+                }
+            }
+            else
+            {
+                OutPutInfoHavePath(string.Format("管线命名不符合要求，对象名为{0}", tempGoNameTwo), tempGoTwo);
+            }
+        }
+    }
+
+    /// <summary>
+    /// 检测地面组
+    /// </summary>
+    /// <param name="parent"></param>
+    static void CheckFloorGroup(GameObject parent)
+    {
+        int childCountOne = parent.transform.childCount;
+        for (int i = 0; i < childCountOne; i++)
+        {
+            GameObject tempGoTwo = parent.transform.GetChild(i).gameObject;
+            string tempGoNameTwo = tempGoTwo.name;
+            if (tempGoNameTwo.ToLower().StartsWith("pingtai"))
+            {
+                if (tempGoTwo.transform.childCount > 0)
+                {
+                    OutPutInfoHavePath(string.Format("地面不应该有子物体，对象名为：{0}", tempGoNameTwo), tempGoTwo);
+                }
+            }
+            else
+            {
+                OutPutInfoHavePath(string.Format("地面命名不符合要求，对象名为{0}", tempGoNameTwo), tempGoTwo);
+            }
+        }
+    }
+
+    /// <summary>
+    /// 斜梯
+    /// </summary>
+    /// <param name="parent"></param>
+    static void CkeckInclinedladderColider(GameObject parent)
+    {
+        int childCountOne = parent.transform.childCount;
+        for (int i = 0; i < childCountOne; i++)
+        {
+            GameObject tempGoTwo = parent.transform.GetChild(i).gameObject;
+            string tempGoNameTwo = tempGoTwo.name;
+            if (tempGoNameTwo.ToLower().StartsWith("inclinedladdercolider"))
+            {
+                if (tempGoTwo.transform.childCount > 0)
+                {
+                    OutPutInfoHavePath(string.Format("斜梯不应该有子物体，对象名为：{0}", tempGoNameTwo), tempGoTwo);
+                }
+            }
+            else
+            {
+                OutPutInfoHavePath(string.Format("斜梯命名不符合要求，对象名为{0}", tempGoNameTwo), tempGoTwo);
+            }
+        }
+    }
+
+    /// <summary>
+    /// 需要半透明处理的模型，比如中控室墙壁
+    /// </summary>
+    /// <param name="parent"></param>
+    static void CkeckHide_Models(GameObject parent)
+    {
+
+    }
+
+    /// <summary>
+    /// 阀门替代物
+    /// </summary>
+    /// <param name="parent"></param>
+    static void CheckValveGroup(GameObject parent)
+    {
+        
+    }
+
+    /// <summary>
+    /// 碰撞片组
+    /// </summary>
+    static void CheckCollision(GameObject parent)
+    {
+        int childCountOne = parent.transform.childCount;
+        for (int i = 0; i < childCountOne; i++)
+        {
+            GameObject tempGoTwo = parent.transform.GetChild(i).gameObject;
+            string tempGoNameTwo = tempGoTwo.name;
+            if (tempGoNameTwo.ToLower().StartsWith("pzp"))
+            {
+                if (tempGoTwo.transform.childCount > 0)
+                {
+                    OutPutInfoHavePath(string.Format("碰撞片不应该有子物体，对象名为：{0}", tempGoNameTwo), tempGoTwo);
+                }
+            }
+            else
+            {
+                OutPutInfoHavePath(string.Format("碰撞片命名不符合要求，对象名为{0}", tempGoNameTwo), tempGoTwo);
+            }
+        }
+    }
+
+
+    /// <summary>
+    /// 消防炮组
+    /// </summary>
+    static void CheckFireControllerGroup(GameObject parent)
+    {
+
+    }
+
     #endregion
 
     #region 工具方法
@@ -214,12 +461,9 @@ public class CheckModel : Editor
     /// </summary>
     static void PreparatoryWork()
     {
-        //清除编辑器中的Debug信息。
-        ClearConsoleMethod.Invoke(new object(), null);
-
         //添加检测开始的信息
         AddOutPutInfo("检测时间为：" + DateTime.Now.ToString("yyyy:MM:dd,HH:mm:ss"));
-        AddOutPutInfo(GlobalString.CkeckStart_Str);
+        AddOutPutInfo(CkeckStart_Str);
     }
 
     /// <summary>
@@ -248,9 +492,9 @@ public class CheckModel : Editor
     /// </summary>
     static void OutputInfo()
     {
-        AddOutPutInfo(GlobalString.CkeckDone_Str);
+        AddOutPutInfo(CkeckDone_Str);
 
-        FileStream fs = new FileStream(Application.dataPath + GlobalString.CheckResultFileName_Str, FileMode.Create);
+        FileStream fs = new FileStream(Application.dataPath + CheckResultFileName_Str, FileMode.Create);
         StreamWriter sw = new StreamWriter(fs);
         //开始写入
         sw.Write(_outPutInfo.ToString());
